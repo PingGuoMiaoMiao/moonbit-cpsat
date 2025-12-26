@@ -2,255 +2,385 @@
 //
 // Licensed under the Apache License, Version 2.0
 
-// Type aliases for cross-package imports
-type Domain = @core.domain.Domain
-type SearchState = @search.state.SearchState
-type Trail = @search.backtrack.Trail
-type Decision = @search.backtrack.Decision
-type DecisionLevel = @search.backtrack.DecisionLevel
-type PropagationEngine = @cp.propagation.PropagationEngine
-type PropagationStatus = @cp.propagator.PropagationStatus
-type SolveResult = @solver.result.SolveResult
-type SolveStatus = @solver.result.SolveStatus
-
 ///|
-/// Top-level solver (DFS with basic propagation).
-/// TODO: plug real propagators and better branching/restarts.
+/// A lightweight DFS + propagation solver (no learning).
 pub struct Solver {
-  propagation: PropagationEngine
+  model : @core.Model
+  strategy : @search.DecisionStrategy
 }
 
 ///|
-pub fn Solver::new() -> Solver {
-  { propagation: PropagationEngine::new() }
+pub fn Solver::new(model : @core.Model) -> Solver {
+  { model, strategy: @search.DecisionStrategy::new() }
 }
 
 ///|
-/// Entry point: solve from an initial search state.
-pub fn Solver::solve(self: Solver, state: SearchState) -> SolveResult {
-  let trail = Trail::new()
-  let (result, _) = self.dfs(state, trail, 0)
-  result
-}
-
-///|
-/// Depth-first search with trail-based backtracking.
-fn Solver::dfs(self: Solver, state: SearchState, trail: Trail, level: DecisionLevel) -> (SolveResult, Trail) {
-  // Propagate
-  match self.propagation.run(state) {
-    PropagationStatus::Conflict => {
-      (SolveResult::unsat(), trail)
-    }
-    PropagationStatus::Ok(new_state) => {
-      if new_state.all_fixed() {
-        return (SolveResult::sat(new_state), trail)
-      }
-
-      // Choose decision
-      match select_mrv(new_state) {
-        None => (SolveResult::sat(new_state), trail)
-        Some(decision) => {
-          let next_level = trail.next_level()
-          let trail_with_cp = trail
-            .push_checkpoint(next_level, new_state.copy())
-            .push_decision(Decision::new(next_level, decision.get_var_id(), decision.get_value()))
-
-          // Assign chosen value (naive: pick min only)
-          let assigned_domain = Domain::from_value(decision.get_value())
-          let branched_state = new_state.set_domain(decision.get_var_id(), assigned_domain)
-
-          let (res, trail_after) = self.dfs(branched_state, trail_with_cp, next_level)
-          match res.get_status() {
-            SolveStatus::Sat => (res, trail_after)
-            _ => {
-              // Backtrack to parent level
-              let (restored, trail_back) = trail_after.backtrack_to_level(level)
-              (SolveResult::unsat(), trail_back)
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-///|
-/// TODO:
-/// - Explore alternative values on conflict instead of immediate UNSAT.
-/// - Add nogood recording / conflict analysis hooks.
-/// - Integrate real propagators and event queues.
-// Copyright 2025
-//
-// Licensed under the Apache License, Version 2.0
-
-import variable { VarId, IntVar }
-import domain { Domain }
-import core/model { Model }
-import search/state { SearchState, VarState }
-import search/backtrack { Trail, Decision, DecisionLevel }
-import search/decision { DecisionStrategy }
-import solver/result { SolveResult, Solution, SolveStatus }
-import cp/propagation { PropagationEngine }
-
-///|
-/// CP-SAT solver.
-/// Coordinates model, search, and propagation to find solutions.
-pub struct Solver {
-  model: Model
-  strategy: DecisionStrategy
-  // TODO: Add propagation engine when constraint propagators are implemented
-}
-
-///|
-/// Create a new solver from a model.
-pub fn Solver::new(model: Model) -> Solver {
-  {
-    model: model
-    strategy: DecisionStrategy::new()
-  }
-}
-
-///|
-/// Solve the model using depth-first search with backtracking.
-/// This is a basic implementation - constraint propagation will be added later.
-pub fn Solver::solve(self: Solver) -> SolveResult {
-  // Initialize search state from model
-  let initial_state = self.initialize_state()
-  
-  // Check if already solved (all variables fixed)
-  if initial_state.all_fixed() {
-    return self.extract_solution(initial_state)
-  }
-  
-  // Check if already failed (empty domain)
-  if initial_state.has_empty_domain() {
-    return SolveResult::unsat()
-  }
-  
-  // Start DFS search
-  let trail = Trail::new()
-  match self.search(initial_state, trail) {
-    Some(solution_state) => self.extract_solution(solution_state)
+/// Solve the model for feasibility.
+pub fn Solver::solve(self : Solver) -> SolveResult {
+  let init_state = initialize_state(self.model)
+  match dfs(self.model, self.strategy, init_state) {
     None => SolveResult::unsat()
+    Some(state) => extract_solution(state)
   }
 }
 
 ///|
-/// Initialize search state from model.
-fn Solver::initialize_state(self: Solver) -> SearchState {
-  let mut var_states: Array[VarState] = []
-  
-  // Add integer variables
-  let int_vars = self.model.get_int_vars()
+/// Build initial search state from modeling-time bounds.
+fn initialize_state(model : @core.Model) -> @search.SearchState {
+  let mut var_states : Array[@search.VarState] = []
+  let int_vars = model.get_int_vars()
   let mut i = 0
   while i < int_vars.length() {
-    let var = int_vars[i]
-    let domain = Domain::new(var.get_min(), var.get_max())
-    let var_state = VarState::new(var.get_id(), domain)
-    var_states = var_states.push(var_state)
+    let v = int_vars[i]
+    let dom = @search.Domain::new(v.get_min(), v.get_max())
+    var_states = [..var_states, @search.VarState::new(v.get_id(), dom)]
     i = i + 1
   }
-  
-  // Add boolean variables (as integer variables with domain [0, 1])
-  let bool_vars = self.model.get_bool_vars()
-  let mut i = 0
-  while i < bool_vars.length() {
-    let var = bool_vars[i]
-    let int_var = var.to_int_var()
-    let domain = Domain::new(int_var.get_min(), int_var.get_max())
-    let var_state = VarState::new(int_var.get_id(), domain)
-    var_states = var_states.push(var_state)
-    i = i + 1
+  let bool_vars = model.get_bool_vars()
+  let mut j = 0
+  while j < bool_vars.length() {
+    let b = bool_vars[j]
+    let iv = b.to_int_var()
+    let dom = @search.Domain::new(iv.get_min(), iv.get_max())
+    var_states = [..var_states, @search.VarState::new(iv.get_id(), dom)]
+    j = j + 1
   }
-  
-  SearchState::new(var_states)
+  @search.SearchState::new(var_states)
 }
 
 ///|
-/// Depth-first search with backtracking.
-fn Solver::search(self: Solver, state: SearchState, trail: Trail) -> Option[SearchState] {
-  // Base case: all variables fixed
-  if state.all_fixed() {
-    return Some(state)
-  }
-  
-  // Base case: empty domain (failure)
-  if state.has_empty_domain() {
-    return None
-  }
-  
-  // Make a decision
-  match self.strategy.make_decision(state) {
-    Some((var_id, value)) => {
-      // Try assigning the value
-      match state.get_domain(var_id) {
-        Some(domain) => {
-          if domain.contains(value) {
-            // Create new state with variable fixed to this value
-            let new_domain = Domain::singleton(value)
-            let new_state = state.set_domain(var_id, new_domain)
-            
-            // TODO: Propagate constraints here
-            // For now, just continue search
-            
-            // Recursive search
-            let next_level = trail.next_level()
-            let decision = Decision::new(next_level, var_id, value)
-            let new_trail = trail.push_decision(decision)
-            
-            match self.search(new_state, new_trail) {
-              Some(solution) => Some(solution)
-              None => {
-                // Backtrack: try next value or return failure
-                // For now, simple implementation: if assignment fails, return failure
-                // TODO: Implement proper backtracking with alternative values
-                None
+fn dfs(
+  model : @core.Model,
+  strategy : @search.DecisionStrategy,
+  state0 : @search.SearchState,
+) -> @search.SearchState? {
+  match propagate(model, state0) {
+    None => None
+    Some(state) => {
+      if state.has_empty_domain() {
+        return None
+      }
+      if state.all_fixed() {
+        if is_consistent(model, state) {
+          return Some(state)
+        }
+        return None
+      }
+      match strategy.make_decision(state) {
+        None => None
+        Some((var_id, value)) =>
+          // Branch 1: try assign var_id = value
+          match state.get_domain(var_id) {
+            None => None
+            Some(dom) => {
+              if dom.contains(value) {
+                let s1 = state.set_domain(
+                  var_id,
+                  @search.Domain::singleton(value),
+                )
+                match dfs(model, strategy, s1) {
+                  Some(sol) => return Some(sol)
+                  None => ()
+                }
               }
+
+              // Branch 2: forbid this value
+              let s2 = state.set_domain(var_id, dom.remove_value(value))
+              dfs(model, strategy, s2)
             }
-          } else {
-            // Value not in domain, failure
-            None
+          }
+      }
+    }
+  }
+}
+
+///|
+fn propagate(
+  model : @core.Model,
+  state0 : @search.SearchState,
+) -> @search.SearchState? {
+  let mut state = state0
+  let constraints = model.get_constraints()
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut i = 0
+    while i < constraints.length() {
+      match apply_constraint(constraints[i], state) {
+        None => return None
+        Some((s2, did_change)) => {
+          state = s2
+          if did_change {
+            changed = true
           }
         }
-        None => None  // Variable not found
+      }
+      i = i + 1
+    }
+    if state.has_empty_domain() {
+      return None
+    }
+  }
+  Some(state)
+}
+
+///|
+fn apply_constraint(
+  c : @core.Constraint,
+  state : @search.SearchState,
+) -> (@search.SearchState, Bool)? {
+  match c {
+    @core.Constraint::CMember(m) => {
+      let v = m.get_var()
+      match state.get_domain(v) {
+        None => Some((state, false))
+        Some(dom) => {
+          let nd = dom.intersect_interval(m.get_min(), m.get_max())
+          if nd.is_empty() {
+            None
+          } else if nd.equals(dom) {
+            Some((state, false))
+          } else {
+            Some((state.set_domain(v, nd), true))
+          }
+        }
       }
     }
-    None => {
-      // No decision possible (should not happen if state is valid)
-      None
+    @core.Constraint::CEqual(eq) => {
+      let x = eq.get_x()
+      let y = eq.get_y()
+      match (state.get_domain(x), state.get_domain(y)) {
+        (Some(dx), Some(dy)) => {
+          let inter = dx.intersect(dy)
+          if inter.is_empty() {
+            None
+          } else {
+            let mut s2 = state
+            let mut did = false
+            if !dx.equals(inter) {
+              s2 = s2.set_domain(x, inter)
+              did = true
+            }
+            if !dy.equals(inter) {
+              s2 = s2.set_domain(y, inter)
+              did = true
+            }
+            Some((s2, did))
+          }
+        }
+        _ => Some((state, false))
+      }
     }
+    @core.Constraint::CNotEqual(neq) => {
+      let x = neq.get_x()
+      let y = neq.get_y()
+      match (state.get_domain(x), state.get_domain(y)) {
+        (Some(dx), Some(dy)) =>
+          match (dx.get_value(), dy.get_value()) {
+            (Some(vx), Some(vy)) =>
+              if vx == vy {
+                None
+              } else {
+                Some((state, false))
+              }
+            (Some(vx), None) => {
+              let nd = dy.remove_value(vx)
+              if nd.is_empty() {
+                None
+              } else if nd.equals(dy) {
+                Some((state, false))
+              } else {
+                Some((state.set_domain(y, nd), true))
+              }
+            }
+            (None, Some(vy)) => {
+              let nd = dx.remove_value(vy)
+              if nd.is_empty() {
+                None
+              } else if nd.equals(dx) {
+                Some((state, false))
+              } else {
+                Some((state.set_domain(x, nd), true))
+              }
+            }
+            _ => Some((state, false))
+          }
+        _ => Some((state, false))
+      }
+    }
+    @core.Constraint::CAllDifferent(ad) => {
+      let vars = ad.get_vars()
+      // collect fixed values, and check duplicates
+      let mut fixed_vals : Array[Int] = []
+      let mut i = 0
+      while i < vars.length() {
+        match state.get_domain(vars[i]) {
+          None => ()
+          Some(dom) =>
+            match dom.get_value() {
+              None => ()
+              Some(v) => {
+                // duplicate check
+                let mut k = 0
+                while k < fixed_vals.length() {
+                  if fixed_vals[k] == v {
+                    return None
+                  }
+                  k = k + 1
+                }
+                fixed_vals = [..fixed_vals, v]
+              }
+            }
+        }
+        i = i + 1
+      }
+
+      // remove fixed values from others
+      let mut did = false
+      let mut s2 = state
+      let mut j = 0
+      while j < vars.length() {
+        let vid = vars[j]
+        match s2.get_domain(vid) {
+          None => ()
+          Some(dom) =>
+            if !dom.is_fixed() {
+              let mut nd = dom
+              let mut k = 0
+              while k < fixed_vals.length() {
+                nd = nd.remove_value(fixed_vals[k])
+                k = k + 1
+              }
+              if nd.is_empty() {
+                return None
+              }
+              if !nd.equals(dom) {
+                s2 = s2.set_domain(vid, nd)
+                did = true
+              }
+            }
+        }
+        j = j + 1
+      }
+      Some((s2, did))
+    }
+    @core.Constraint::CLinearLe(le) =>
+      if linear_le_feasible(le, state) {
+        Some((state, false))
+      } else {
+        None
+      }
   }
 }
 
 ///|
-/// Extract solution from search state.
-fn Solver::extract_solution(self: Solver, state: SearchState) -> SolveResult {
-  let mut solution = Solution::new()
-  let var_states = state.get_all_states()
-  
+fn linear_le_feasible(le : @core.LinearLe, state : @search.SearchState) -> Bool {
+  let vars = le.get_vars()
+  let coeffs = le.get_coefficients()
+  let rhs = le.get_constant()
+  if vars.length() != coeffs.length() {
+    return false
+  }
+  let mut min_sum = 0
   let mut i = 0
-  while i < var_states.length() {
-    let var_state = var_states[i]
-    let domain = var_state.get_domain()
-    match domain.get_value() {
-      Some(value) => {
-        solution = solution.add(var_state.get_var_id(), value)
-      }
-      None => {
-        // Variable not fixed - this should not happen in a complete solution
-        // Return UNKNOWN
-        return SolveResult::unknown()
+  while i < vars.length() {
+    let vid = vars[i]
+    let c = coeffs[i]
+    match state.get_domain(vid) {
+      None => return false
+      Some(dom) => {
+        let lo = dom.get_min()
+        let hi = dom.get_max()
+        if c >= 0 {
+          min_sum = min_sum + c * lo
+        } else {
+          min_sum = min_sum + c * hi
+        }
       }
     }
     i = i + 1
   }
-  
-  SolveResult::sat(solution)
+  min_sum <= rhs
 }
 
 ///|
-/// Get the model.
-pub fn Solver::get_model(self: Solver) -> Model {
-  self.model
+fn is_consistent(model : @core.Model, state : @search.SearchState) -> Bool {
+  let cs = model.get_constraints()
+  let mut i = 0
+  while i < cs.length() {
+    if !constraint_ok(cs[i], state) {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
+///|
+fn constraint_ok(c : @core.Constraint, state : @search.SearchState) -> Bool {
+  match c {
+    @core.Constraint::CMember(m) =>
+      match state.get_domain(m.get_var()) {
+        None => false
+        Some(dom) =>
+          !dom.intersect_interval(m.get_min(), m.get_max()).is_empty()
+      }
+    @core.Constraint::CEqual(eq) =>
+      match (state.get_domain(eq.get_x()), state.get_domain(eq.get_y())) {
+        (Some(dx), Some(dy)) => !dx.intersect(dy).is_empty()
+        _ => false
+      }
+    @core.Constraint::CNotEqual(neq) =>
+      match (state.get_domain(neq.get_x()), state.get_domain(neq.get_y())) {
+        (Some(dx), Some(dy)) =>
+          match (dx.get_value(), dy.get_value()) {
+            (Some(vx), Some(vy)) => vx != vy
+            _ => true
+          }
+        _ => false
+      }
+    @core.Constraint::CAllDifferent(ad) => {
+      let vars = ad.get_vars()
+      let mut seen : Array[Int] = []
+      let mut i = 0
+      while i < vars.length() {
+        match state.get_domain(vars[i]) {
+          None => return false
+          Some(dom) =>
+            match dom.get_value() {
+              None => ()
+              Some(v) => {
+                let mut k = 0
+                while k < seen.length() {
+                  if seen[k] == v {
+                    return false
+                  }
+                  k = k + 1
+                }
+                seen = [..seen, v]
+              }
+            }
+        }
+        i = i + 1
+      }
+      true
+    }
+    @core.Constraint::CLinearLe(le) => linear_le_feasible(le, state)
+  }
+}
+
+///|
+fn extract_solution(state : @search.SearchState) -> SolveResult {
+  let mut sol = Solution::new()
+  let vars = state.get_all_states()
+  let mut i = 0
+  while i < vars.length() {
+    let vs = vars[i]
+    match vs.get_domain().get_value() {
+      None => ()
+      Some(v) => sol = sol.add(vs.get_var_id(), v)
+    }
+    i = i + 1
+  }
+  SolveResult::sat(sol)
+}

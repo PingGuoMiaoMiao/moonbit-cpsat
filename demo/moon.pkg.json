@@ -1,0 +1,11 @@
+{
+  "is-main": true,
+  "import": [
+    { "path": "username/MoonbitCpsat/src/core", "alias": "core" },
+    { "path": "username/MoonbitCpsat/src/solver", "alias": "solver" },
+    { "path": "moonbitlang/x/fs", "alias": "fs" },
+    { "path": "moonbitlang/x/encoding", "alias": "encoding" }
+  ]
+}
+
+

@@ -2,33 +2,28 @@
 //
 // Licensed under the Apache License, Version 2.0
 
-// Type aliases for cross-package imports
-type VarId = @core.variable.VarId
-type Domain = @core.domain.Domain
-type SearchState = @search.state.SearchState
-
 ///|
 /// Result of a decision: choose a variable and a value to try.
 pub struct DecisionResult {
-  var_id: VarId
-  value: Int
+  var_id : VarId
+  value : Int
 }
 
 ///|
 /// Create a decision result.
-pub fn DecisionResult::new(var_id: VarId, value: Int) -> DecisionResult {
-  { var_id: var_id, value: value }
+pub fn DecisionResult::new(var_id : VarId, value : Int) -> DecisionResult {
+  { var_id, value }
 }
 
 ///|
 /// Get variable id.
-pub fn DecisionResult::get_var_id(self: DecisionResult) -> VarId {
+pub fn DecisionResult::get_var_id(self : DecisionResult) -> VarId {
   self.var_id
 }
 
 ///|
 /// Get chosen value.
-pub fn DecisionResult::get_value(self: DecisionResult) -> Int {
+pub fn DecisionResult::get_value(self : DecisionResult) -> Int {
   self.value
 }
 
@@ -37,10 +32,9 @@ pub fn DecisionResult::get_value(self: DecisionResult) -> Int {
 /// - pick an unfixed variable with the smallest domain size
 /// - choose its minimum value (leftmost value)
 /// Returns None if all variables are fixed or no variables exist.
-pub fn select_mrv(state: SearchState) -> Option[DecisionResult] {
-  let mut best_var: VarId = -1
-  let mut best_domain: Domain? = None
-
+pub fn select_mrv(state : SearchState) -> DecisionResult? {
+  let mut best_var : VarId = -1
+  let mut best_domain : Domain? = None
   let vars = state.get_all_states()
   let mut i = 0
   while i < vars.length() {
@@ -55,41 +49,28 @@ pub fn select_mrv(state: SearchState) -> Option[DecisionResult] {
         best_var = var_state.get_var_id()
         best_domain = Some(dom)
       }
-      Some(d) => {
+      Some(d) =>
         if dom.size() < d.size() {
           best_var = var_state.get_var_id()
           best_domain = Some(dom)
         }
-      }
     }
     i = i + 1
   }
-
   match best_domain {
     None => None
-    Some(dom) => {
+    Some(dom) =>
       // choose the smallest value in domain for determinism
       Some(DecisionResult::new(best_var, dom.get_min()))
-    }
   }
 }
-
-///|
-/// TODO: allow pluggable decision strategies (e.g., activity-based, random tie-breaks).
-// Copyright 2025
-//
-// Licensed under the Apache License, Version 2.0
-
-import variable { VarId }
-import domain { Domain }
-import search/state { SearchState, VarState }
 
 ///|
 /// Decision strategy for variable and value selection.
 /// This is a framework that can be extended with different heuristics.
 pub struct DecisionStrategy {
   // Strategy name for debugging
-  name: String
+  name : String
 }
 
 ///|
@@ -100,25 +81,27 @@ pub fn DecisionStrategy::new() -> DecisionStrategy {
 
 ///|
 /// Create a decision strategy with a custom name.
-pub fn DecisionStrategy::with_name(name: String) -> DecisionStrategy {
-  { name: name }
+pub fn DecisionStrategy::with_name(name : String) -> DecisionStrategy {
+  { name, }
 }
 
 ///|
 /// Select the next variable to branch on.
 /// Returns the variable ID and its current domain, or None if all variables are fixed.
 /// Default strategy: MRV (Minimum Remaining Values) - choose variable with smallest domain.
-pub fn DecisionStrategy::select_variable(self: DecisionStrategy, state: SearchState) -> Option[(VarId, Domain)] {
+pub fn DecisionStrategy::select_variable(
+  _self : DecisionStrategy,
+  state : SearchState,
+) -> (VarId, Domain)? {
   let states = state.get_all_states()
-  let mut best_var_id: Option[VarId] = None
-  let mut best_domain: Option[Domain] = None
-  let mut best_size = Int::max_value()
-  
+  let mut best_var_id : VarId? = None
+  let mut best_domain : Domain? = None
+  let mut best_size = 2147483647
   let mut i = 0
   while i < states.length() {
     let var_state = states[i]
     let domain = var_state.get_domain()
-    
+
     // Skip fixed variables
     if !domain.is_fixed() {
       let size = domain.size()
@@ -130,14 +113,12 @@ pub fn DecisionStrategy::select_variable(self: DecisionStrategy, state: SearchSt
     }
     i = i + 1
   }
-  
   match best_var_id {
-    Some(var_id) => {
+    Some(var_id) =>
       match best_domain {
         Some(domain) => Some((var_id, domain))
         None => None
       }
-    }
     None => None
   }
 }
@@ -146,7 +127,10 @@ pub fn DecisionStrategy::select_variable(self: DecisionStrategy, state: SearchSt
 /// Select the next value to try for a variable.
 /// Returns the value to assign.
 /// Default strategy: choose the minimum value in the domain.
-pub fn DecisionStrategy::select_value(self: DecisionStrategy, domain: Domain) -> Option[Int] {
+pub fn DecisionStrategy::select_value(
+  _self : DecisionStrategy,
+  domain : Domain,
+) -> Int? {
   if domain.is_empty() {
     None
   } else {
@@ -157,21 +141,22 @@ pub fn DecisionStrategy::select_value(self: DecisionStrategy, domain: Domain) ->
 ///|
 /// Make a decision: select variable and value.
 /// Returns (var_id, value) if a decision can be made, None otherwise.
-pub fn DecisionStrategy::make_decision(self: DecisionStrategy, state: SearchState) -> Option[(VarId, Int)] {
+pub fn DecisionStrategy::make_decision(
+  self : DecisionStrategy,
+  state : SearchState,
+) -> (VarId, Int)? {
   match self.select_variable(state) {
-    Some((var_id, domain)) => {
+    Some((var_id, domain)) =>
       match self.select_value(domain) {
         Some(value) => Some((var_id, value))
         None => None
       }
-    }
     None => None
   }
 }
 
 ///|
 /// Get the strategy name.
-pub fn DecisionStrategy::get_name(self: DecisionStrategy) -> String {
+pub fn DecisionStrategy::get_name(self : DecisionStrategy) -> String {
   self.name
 }
-
